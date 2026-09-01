@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Barcelona | Monitoreo de Carga Térmica UTCI</title>
+<link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* PANEL DE CONTROL */
+
+        .control-panel {
+            position: fixed;
+            top: 20px;
+            left: 60px;
+            z-index: 999999;
+            background: white;
+            padding: 14px 18px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            border: 2px solid #333;
+            font-family: Arial, sans-serif;
+            width: 320px;
+        }
+
+        .slider-ui {
+            width: 100%;
+            margin-top: 8px;
+            cursor: pointer;
+            display: block;
+        }
+
+        .status-text {
+            font-size: 11px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .climate-station-icon {
+            background: transparent;
+            border: none;
+        }
+    </style>
+</head>
+
+<body>
+<!-- ==========================================
+     MAPA
+     ========================================== -->
+    <div id="map"></div>
+    <!-- ==========================================
+         PANEL DE CONTROL
+         ========================================== -->
+    <div class="control-panel">
+        <h4 style="
+            margin: 0 0 6px 0;
+            font-family: Helvetica, Arial, sans-serif;
+            font-weight: bold;
+            font-size: 14px;
+        ">
+            📍 BARCELONA | Monitoreo UTCI
+        </h4>
+
+        <div style="
+            font-size: 12px;
+            color: #333;
+            line-height: 1.4;
+        ">
+            📊 Nodos en la red:
+            <span
+                id="nodes-count"
+                style="font-weight: bold; color: #0056B3;"
+            >
+                0
+            </span>
+            <br>
+            📅 Tiempo del mapa:
+            <span
+                id="time-display"
+                style="font-weight: bold; color: #28A745;"
+            >
+                Cargando...
+            </span>
+        </div>
+        <label
+            for="time-slider"
+            style="
+                display: block;
+                margin-top: 8px;
+                font-size: 11px;
+                color: #555;
+            "
+        >
+            Seleccionar hora
+        </label>
+        <input
+            type="range"
+            id="time-slider"
+            min="0"
+            max="0"
+            value="0"
+            class="slider-ui"
+            aria-label="Seleccionar hora"
+        >
+    <div
+    id="debug-status"
+    style="
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #ddd;
+        font-size: 10px;
+        line-height: 1.5;
+        color: #555;
+    "
+    >
+    </div>
+</div>
+<script>
+    /* =========================================================
+       CONFIGURACIÓN DEL MAPA
+       ========================================================= */
+    var map = L.map("map").setView(
+        [41.3874, 2.1686],
+        13
+    );
+
+    L.tileLayer(
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        {
+            attribution: "© OpenStreetMap contributors"
+        }
+    ).addTo(map);
+
+
+    /* =========================================================
+       VARIABLES GLOBALES
+       ========================================================= */
+
+    var timeSlots = [];
+    var topology = {};
+    var markerMap = {};
+    var layerGroup = L.layerGroup().addTo(map);
+    var currentFetchController = null;
+    /* =========================================================
+       ESCALA DE RIESGO UTCI
+       ========================================================= */
+    var riskLabels = [
+        "Cold Stress",
+        "Sin estrés térmico (Confort)",
+        "Estrés térmico moderado",
+        "Estrés térmico fuerte",
+        "Estrés térmico muy fuerte",
+        "Estrés térmico extremo"
+    ];
+
+    var riskColors = [
+        "#B8DDB0",
+        "#D9E59A",
+        "#F1D66B",
+        "#F2A65A",
+        "#E76F51",
+        "#C44536"
+    ];
+    /* =========================================================
+       CREACIÓN DE LA ICONA DE METEOSTACIÓN
+       ========================================================= */
+
+    function createClimateStationIcon() {
+        var size_px = 20;
+
+        var icon_style = `
+            width: ${size_px}px;
+            height: ${size_px}px;
+            background-color: #FFC107;
+            border-radius: 50%;
+            border: 1.5px solid #FFFFFF;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+            font-size: ${size_px / 2 + 2}px;
+            line-height: ${size_px}px;
+            text-align: center;
+            cursor: pointer;
+        `;
+
+        return L.divIcon({
+            className: "climate-station-icon",
+            html: `
+                <div style="${icon_style}">
+                    🌡️
+                </div>
+            `,
+            iconSize: [
+                size_px,
+                size_px
+            ],
+            iconAnchor: [
+                size_px / 2,
+                size_px / 2
+            ],
+            popupAnchor: [
+                0,
+                -size_px / 2
+            ]
+        });
+    }
+    /* =========================================================
+       BADGES DE LÍNEAS DE TRANSPORTE
+       ========================================================= */
+
+    function buildBadgesHtml(lineDataStr) {
+        if (
+            !lineDataStr ||
+            lineDataStr === "N/A"
+        ) {
+            return "";
+        }
+        var badgesHtml = "";
+        var items = lineDataStr.split(";");
+
+        items.forEach(function(item) {
+            var parts = item.split("|");
+
+            if (parts.length < 3) {
+                return;
+            }
+
+            var name = parts[0];
+            var bg = parts[1];
+            var text = parts[2];
+
+            badgesHtml += `
+                <span
+                    style="
+                        background-color: #${bg};
+                        color: #${text};
+                        padding: 2px 6px;
+                        font-weight: bold;
+                        border-radius: 4px;
+                        display: inline-block;
+                        margin: 2px 2px;
+                        font-size: 11px;
+                        font-family: Arial;
+                    "
+                >
+                    ${name}
+                </span>
+            `;
+        });
+        return badgesHtml;
+    }
+    function getStationLineColor(obj) {
+        if (!obj.line_data || obj.line_data === "N/A") {
+            return "#DC3545";
+        }
+
+        var firstLine = obj.line_data.split(";")[0];
+        var parts = firstLine.split("|");
+
+        if (parts.length >= 2) {
+            return "#" + parts[1];
+        }
+
+        return "#DC3545";
+    }
+    /* =========================================================
+       POPUP
+       ========================================================= */
+
+    function buildInfrastructurePopup(obj) {
+
+        var badges = buildBadgesHtml(
+            obj.line_data
+        );
+
+        var stopTitle = "🚏 Parada de Autobús";
+
+        if (obj.type === "metro") {
+            stopTitle = "Ⓜ️ Estación de Metro";
+        } else if (
+            obj.type === "metro_access"
+        ) {
+            stopTitle = "⬇️ Acceso Físico (Metro)";
+        } else if (
+            obj.type === "climate_station"
+        ) {
+            stopTitle = "🌡️ Estación Climática";
+        }
+
+        var parentStationHtml = "";
+
+        if (
+            obj.type === "metro_access" &&
+            obj.parent_station
+        ) {
+            parentStationHtml = `
+                <br>
+                <small style="color: gray;">
+                    Estación:
+                    ${obj.parent_station}
+                </small>
+            `;
+        }
+        return `
+            <div
+                style="
+                    font-family: Arial, sans-serif;
+                    min-width: 220px;
+                    line-height: 1.4;
+                    font-size: 12px;
+                "
+            >
+                <div style="margin-bottom: 6px;">
+                    ${badges}
+                </div>
+                <b>
+                    ${stopTitle}
+                </b>
+                <br>
+                <span style="color: #555;">
+                    ${obj.name || ""}
+                </span>
+                ${parentStationHtml}
+            </div>
+        `;
+    }
+    /* =========================================================
+       MARKER
+       ========================================================= */
+
+    function createTopologyMarker(id, obj) {
+        var marker;
+        if (obj.type === "climate_station") {
+            marker = L.marker(
+                [
+                    obj.lat,
+                    obj.lon
+                ],
+                {
+                    icon: createClimateStationIcon()
+                }
+            );
+        } else {
+            var defaultColor = "#0056B3";
+            if (obj.type === "metro") {
+                defaultColor = getStationLineColor(obj);
+            } else if (
+                obj.type === "metro_access"
+            ) {
+                defaultColor = "#8E44AD";
+            }
+            marker = L.circleMarker(
+                [
+                    obj.lat,
+                    obj.lon
+                ],
+                {
+                    radius:
+                        obj.type === "metro"
+                            ? 15
+                            : 6,
+
+                    color: defaultColor,
+                    weight:
+                        obj.type === "metro"
+                            ? 3
+                            : 2,
+
+                    fillColor: defaultColor,
+
+                    fillOpacity:
+                        obj.type === "metro"
+                            ? 0.15
+                            : 0.4
+                }
+            );
+        }
+        marker
+            .bindPopup(
+                buildInfrastructurePopup(obj)
+            )
+            .addTo(layerGroup);
+        markerMap[id] = marker;
+    }
+    /* =========================================================
+       TIMESLOTS.JSON
+       ========================================================= */
+    var dateTree = {};
+    var currentSelectedDate = "";
+
+    function loadMultiDayDashboard() {
+        return fetch("topology.json")
+            .then(function(res) {
+                if (!res.ok) throw new Error("¡El archivo topology.json no se encuentra!");
+                return res.json();
+            })
+            .then(function(topoData) {
+                topology = topoData;
+                document.getElementById("nodes-count").innerText = Object.keys(topology).length;
+
+                Object.keys(topology).forEach(id => {
+                    var obj = topology[id];
+                    var defaultColor = "#0056B3";
+                    var stopTitle = "🚏 Parada de Autobús";
+
+                    if (obj.type === "metro") {
+                        defaultColor = getStationLineColor(obj);
+                        stopTitle = "Ⓜ️ Estación de Metro";
+                        }
+                    if (obj.type === "metro_access") {
+                        defaultColor = "#8E44AD";
+                        stopTitle = "⬇️ Acceso Físico (Metro)";
+                         }
+                    if (obj.type === "climate_station") {
+                        defaultColor = "#FFC107";
+                        stopTitle = "☀️ Estación Climática";
+                        }
+
+                    var badges = buildBadgesHtml(obj.line_data);
+
+                    var popupHtml = `
+                        <div style="font-family: Arial, sans-serif; min-width: 220px; line-height: 1.4; font-size: 12px;">
+                            <div style="margin-bottom: 6px;">${badges}</div>
+                            <b>${stopTitle}</b><br>
+                            <span style="color: #555;">${obj.name}</span>
+                            ${obj.type === 'metro_access' ? `<br><small style='color: gray;'>Estación: ${obj.parent_station}</small>` : ''}
+                        </div>`;
+
+                var marker;
+
+                if (obj.type === "climate_station") {
+
+                    marker = L.marker(
+                        [obj.lat, obj.lon],
+                        {
+                            icon: createClimateStationIcon()
+                        }
+                    );
+
+                } else {
+
+                    marker = L.circleMarker(
+                        [obj.lat, obj.lon],
+                        {
+                            radius: obj.type === "metro" ? 15 : 6,
+                            color: defaultColor,
+                            weight: 2,
+                            fillColor: defaultColor,
+                            fillOpacity: 0.4
+                        }
+                    );
+                }
+
+                marker
+                    .bindPopup(popupHtml)
+                    .addTo(layerGroup);
+
+                markerMap[id] = marker;
+            });
+                return fetch("dates.json");
+            })
+            .then(function(res) {
+                if (!res.ok) throw new Error("¡El archivo dates.json no se encuentra!");
+                return res.json();
+            })
+            .then(function(tree) {
+                dateTree = tree;
+                var dates = Object.keys(dateTree);
+                if (dates.length === 0) throw new Error("dates.json está vacío.");
+
+                var htmlDropdown = `
+                    <label style="font-size: 11px; color: #666; display:block; margin-top: 8px;">📅 Seleccione la fecha:</label>
+                    <select id="date-selector" style="width:100%; padding:6px; margin-top:4px; border-radius:4px; border:1px solid #ccc; font-size:13px; cursor:pointer;">
+                    </select>
+                    <hr style="margin: 10px 0; border: 0; border-top: 1px solid #eee;">
+                `;
+                var timeDisplayDiv = document.getElementById("time-display").parentNode;
+                timeDisplayDiv.insertAdjacentHTML('beforebegin', htmlDropdown);
+
+                var dateSelector = document.getElementById("date-selector");
+                dates.forEach(function(date) {
+                    var opt = document.createElement("option");
+                    opt.value = date;
+                    opt.innerText = date;
+                    dateSelector.appendChild(opt);
+                });
+                dateSelector.addEventListener("change", function() {
+                    switchActiveDate(this.value);
+                });
+                switchActiveDate(dates[0]);
+            })
+            .catch(function(err) {
+                console.error("[Error]:", err.message);
+            });
+    }
+
+    function switchActiveDate(dateKey) {
+        currentSelectedDate = dateKey;
+        timeSlots = dateTree[dateKey] || [];
+
+        var slider = document.getElementById("time-slider");
+        slider.max = timeSlots.length - 1;
+        slider.value = 0;
+
+        slider.oninput = function() {
+            var index = Number(this.value);
+            var slotKey = timeSlots[index];
+
+            loadHourlyDelta(slotKey);
+        };
+        if (timeSlots.length > 0) {
+            loadHourlyDelta(timeSlots[0]);
+        }
+    }
+    /* =========================================================
+       formatSlotTime
+       ========================================================= */
+    function formatSlotTime(slotKey) {
+        if (!slotKey || slotKey.length < 4) return "00.00.0000 00:00";
+
+        var dateParts = currentSelectedDate.split("-");
+        var year = dateParts[0];
+        var month = dateParts[1];
+        var day = dateParts[2];
+
+        var hour = slotKey.substring(0, 2);
+        var minute = slotKey.substring(2, 4);
+
+        return day + "." + month + "." + year + " " + hour + ":" + minute;
+    }
+    /* =========================================================
+       POPUP CLIMÁTICO
+       ========================================================= */
+
+    function buildClimatePopup(
+        obj,
+        utci,
+        riskCode,
+        t2m,
+        lst,
+        rh
+    ) {
+        var color =
+            riskColors[riskCode];
+        var label =
+            riskLabels[riskCode];
+
+        var badges =
+            buildBadgesHtml(
+                obj.line_data
+            );
+
+        var stopTitle =
+            "🚏 Autobús";
+
+        if (obj.type === "metro") {
+            stopTitle = "Ⓜ️ Metro";
+        } else if (
+            obj.type === "metro_access"
+        ) {
+            stopTitle = "⬇️ Acceso Metro";
+        } else if (
+            obj.type === "climate_station"
+        ) {
+            stopTitle =
+                "☀️ Estación Climática";
+        }
+        return `
+            <div
+                style="
+                    font-family: Arial, sans-serif;
+                    font-size: 12px;
+                    min-width: 230px;
+                    line-height: 1.4;
+                "
+            >
+                <div style="margin-bottom: 6px;">
+                    ${badges}
+                </div>
+                <b>
+                    ${stopTitle}
+                </b>
+                <br>
+                <span style="color: #555;">
+                    ${obj.name || ""}
+                </span>
+                <hr
+                    style="
+                        margin: 6px 0;
+                        border: 0;
+                        border-top:
+                            1px dashed #ccc;
+                    "
+                >
+                🌡️
+                <b>Temp. Aire T2M:</b>
+                ${Number(t2m).toFixed(1)} °C
+                <br>
+                🧱
+                <b>Temp. Superficie LST:</b>
+                ${Number(lst).toFixed(1)} °C
+                <br>
+                💧
+                <b>Humedad Relativa RH:</b>
+                ${Number(rh).toFixed(1)} %
+                <hr
+                    style="
+                        margin: 5px 0;
+                        border: 0;
+                        border-top:
+                            1px solid #333;
+                    "
+                >
+                🔴
+                <b
+                    style="
+                        color: ${color};
+                        font-size: 13px;
+                    "
+                >
+                    Índice UTCI:
+                    ${Number(utci).toFixed(1)} °C
+                </b>
+                <br>
+                ⚠️
+                <b>Nivel de Riesgo:</b>
+                <span
+                    style="
+                        font-weight: bold;
+                        color: ${color};
+                    "
+                >
+                    ${label}
+                </span>
+            </div>
+        `;
+    }
+    /* =========================================================
+       CLIMATE DELTA
+       ========================================================= */
+function loadHourlyDelta(slotKey) {
+
+    if (!slotKey) {
+        return;
+    }
+
+    if (currentFetchController) {
+        currentFetchController.abort();
+    }
+
+    currentFetchController = new AbortController();
+    var controller = currentFetchController;
+
+    var displayTime = formatSlotTime(slotKey);
+
+    var fileName =
+        currentSelectedDate +
+        "/delta_" +
+        slotKey +
+        ".json";
+
+    document.getElementById("time-display").innerText =
+        displayTime;
+
+    fetch(fileName, {
+        signal: controller.signal
+    })
+
+    .then(function(res) {
+
+        if (!res.ok) {
+            throw new Error(
+                "Falta el archivo climático: " +
+                fileName
+            );
+        }
+
+        return res.json();
+    })
+
+    .then(function(deltaData) {
+
+        var updated = 0;
+        var skipped = 0;
+
+        var typeStats = {};
+
+        Object.keys(markerMap).forEach(function(id) {
+
+            var obj = topology[id];
+
+            if (!obj) {
+                return;
+            }
+
+            var type = obj.type || "NO_TYPE";
+
+            if (!typeStats[type]) {
+                typeStats[type] = 0;
+            }
+
+            typeStats[type]++;
+        });
+
+
+        Object.keys(markerMap).forEach(function(id) {
+
+            var marker = markerMap[id];
+            var obj = topology[id];
+            var pData = deltaData[id];
+
+            if (!obj) {
+                skipped++;
+                return;
+            }
+            if (!marker) {
+                skipped++;
+                return;
+            }
+            if (!pData) {
+                skipped++;
+                return;
+            }
+            if (
+                obj.type === "climate_station" ||
+                obj.type === "metro"
+            ) {
+                return;
+            }
+
+            var utci = Number(pData[0]);
+            var riskCode = Number(pData[1]);
+            var t2m = Number(pData[2]);
+            var lst = Number(pData[3]);
+            var rh = Number(pData[4]);
+
+            if (
+                !Number.isInteger(riskCode) ||
+                riskCode < 0 ||
+                riskCode >= riskColors.length
+            ) {
+                skipped++;
+                return;
+            }
+
+            var color = riskColors[riskCode];
+
+            /*
+             * ==========================================
+             * COLOR MARKER
+             * ==========================================
+             */
+
+            if (
+                obj.type === "metro_access"
+            ) {
+                marker.setStyle({
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.35,
+                    weight: 2,
+                    radius: 5
+                });
+
+            }
+
+            else if (
+                obj.type === "bus"
+            ) {
+                marker.setStyle({
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.75,
+                    weight: 2,
+                    radius: 6
+                });
+            }
+
+            /*
+             * ==========================================
+             * POPUP
+             * ==========================================
+             */
+
+            var popupContent =
+                buildClimatePopup(
+                    obj,
+                    utci,
+                    riskCode,
+                    t2m,
+                    lst,
+                    rh
+                );
+
+            if (marker.getPopup()) {
+
+                marker.setPopupContent(
+                    popupContent
+                );
+
+            }
+
+            if (marker.isPopupOpen()) {
+
+                marker
+                    .getPopup()
+                    .setContent(
+                        popupContent
+                    );
+            }
+
+            updated++;
+        });
+    })
+
+    .catch(function(err) {
+
+        if (
+            err.name === "AbortError"
+        ) {
+            return;
+        }
+
+        console.error("Aviso de carga climática:", err.message);
+
+        document.getElementById(
+            "status"
+        ).innerText =
+            "Error al cargar datos";
+
+        document.getElementById(
+            "debug-status"
+        ).innerText =
+            "❌ " + err.message;
+    });
+}
+    /* =========================================================
+       start
+       ========================================================= */
+        loadMultiDayDashboard()
+            .catch(function(err) {
+                console.error(
+                    "Error crítico de inicialización:",
+                    err
+                );
+
+                document
+                    .getElementById("status")
+                    .innerText =
+                        "Error de inicialización";
+
+                alert(
+                    "Error de datos:\n\n" +
+                    err.message
+                );
+            });
+</script>
+</body>
+</html>
