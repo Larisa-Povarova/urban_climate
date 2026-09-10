@@ -12,22 +12,17 @@ El proyecto utiliza exclusivamente fuentes de datos abiertas y no utiliza inform
 
 ## Visualización
 
-El mapa permite explorar las condiciones climáticas y meteorológicas de Barcelona mediante una cuadrícula espacial de **100 × 100 metros**.
+El mapa representa las condiciones de estrés térmico en diferentes puntos de la red de transporte público de Barcelona.
 
-Entre los principales indicadores utilizados se encuentran:
+Cada elemento representado en el mapa corresponde a un punto de la infraestructura de transporte, como una **parada de autobús**, una **estación de metro** o un **acceso físico a una estación**.
 
-* **UTCI (Universal Thermal Climate Index)**;
-* temperatura del aire;
-* tempperatura de la superficie;
-* humedad relativa.
+La posición de cada punto se obtiene a partir de sus coordenadas geográficas y se relaciona con la celda correspondiente de la cuadrícula climática de **100 × 100 metros**. De esta forma, cada punto de transporte se asocia a las condiciones climáticas de la zona en la que se encuentra.
 
-La visualización también incorpora información sobre el transporte público:
+El color de cada punto representa el nivel de **estrés térmico según el índice UTCI (Universal Thermal Climate Index)**. Cuanto mayor es el nivel de estrés térmico, mayor es la intensidad del color utilizada en la visualización.
 
-* líneas y paradas de autobús;
-* líneas y estaciones de metro;
-* accesos físicos a las estaciones.
+Al seleccionar un punto del mapa, el usuario puede consultar la información disponible para ese elemento de transporte y las condiciones climáticas correspondientes al intervalo temporal seleccionado.
 
-Los datos pueden consultarse para diferentes **fechas e intervalos temporales** disponibles en la aplicación.
+La aplicación permite cambiar la **fecha** y el **intervalo temporal**, lo que permite comparar las condiciones térmicas en diferentes momentos.
 
 ## Fuentes de datos
 
